@@ -29,6 +29,7 @@ $script:knownStatuses=@{
  '0B 00 07'='Ruhezustand';'03 07 07'='Ruf / Alarm';'05 0E 07'='Anwesend'
  '02 0A 07'='Notruf';'05 01 01'='Störung';'05 0E 01'='Anwesend'
  '03 07 05'='Ruf';'03 09 05'='WC-Ruf';'02 0A 05'='Notruf'
+ '03 07 01'='Ruf';'03 09 01'='WC-Ruf';'02 0A 01'='Notruf';'02 0B 01'='WC-Not'
 }
 $script:devices=@{}; $script:targets=@{}; $script:children=@{}
 $script:events=[System.Collections.Generic.List[object]]::new()
@@ -158,13 +159,14 @@ function Decode-Frame([byte[]]$f){
         $target=([int]$f[11]).ToString()+'-'+([int]($f[12]*256+$f[13])).ToString()
         $code=($f[14..16]|%{$_.ToString('X2')}) -join ' '
         $name=Decode-Text $f 17 13 437;$label=Decode-Text $f 30 10 437
-        $kindMap=@{'05 01 01'='fault';'05 0E 01'='presence';'03 07 05'='call';'03 09 05'='bath_call';'02 0A 05'='emergency'}; $kindName=if($kindMap.ContainsKey($code)){$kindMap[$code]}else{'other'}
+        $kindMap=@{'05 01'='fault';'05 0E'='presence';'03 07'='call';'03 09'='bath_call';'02 0A'='emergency';'02 0B'='emergency'}; $prefix=$code.Substring(0,5);$kindName=if($kindMap.ContainsKey($prefix)){$kindMap[$prefix]}else{'other'}
         $channel='';if($name.StartsWith($target+'-')){$tail=$name.Substring($target.Length+1);if($tail -match '^[0-9]+$'){$channel=$tail}}
         $central=@{target=$target;code=$code;name=$name;label=$label;kind=$kindName;channel=$channel;event_id=(($f[9..10]|%{$_.ToString('X2')}) -join ' ');phase=[int]$f[8]}
     }
     $decoded=@{}
     if($checksumOk){
         if(($command -in @('01 04','02 04')) -and $f.Length -eq 18){$decoded.target=([int]$f[11]).ToString()+'-'+([int]($f[12]*256+$f[13])).ToString()}
+        elseif($command -eq '00 03' -and $f.Length -eq 18 -and $f[16] -eq 0x7F){$decoded.target=([int]$f[11]).ToString()+'-'+([int]($f[12]*256+$f[13])).ToString();$decoded.event_id=Get-HexSlice $f 9 10;$decoded.status_prefix=Get-HexSlice $f 14 15;$decoded.withdrawn=$true}
         elseif($command -in @('01 52','02 52','00 08') -and $f.Length -ge 12){$decoded.child=([int]$f[8]).ToString()+'-'+([int]($f[9]*256+$f[10])).ToString()}
         elseif($command -in @('01 51','02 51') -and $f.Length -eq 23){$decoded.version_bytes=($f[11..12]|%{$_.ToString('X2')}) -join ' '}
         elseif($command -eq '00 02' -and $f.Length -ge 13){$decoded.clock_hm=('{0:D2}:{1:D2}' -f $f[8],$f[9]);$decoded.clock_text=Decode-Text $f 10 ($f.Length-11) 20127}
@@ -174,6 +176,7 @@ function Decode-Frame([byte[]]$f){
     if($signal){$status=$signal.label}
     $hex=($f|%{$_.ToString('X2')}) -join ' '
     $message=if($central){$central.target+' · '+$central.name+': '+$(if($central.label){$central.label}else{$central.code})}
+        elseif($decoded.withdrawn){$decoded.target+': Meldung '+$decoded.event_id+' / '+$decoded.status_prefix+' zurückgenommen'}
         elseif($command -eq '01 03'){if($status){$status}else{'Unbekannter Status '+$statusKey}}
         elseif($signal){$signal.label+' ('+$command+': '+(Get-HexSlice $f 8 ($f.Length-2))+')'}
         elseif($sync -eq 'AA 55' -and $command -eq '00 80' -and $f.Length -ge 10){'Quittung zu Typ '+('{0:X2}' -f $f[8])}
@@ -200,11 +203,25 @@ function Decode-Frame([byte[]]$f){
         if(-not $script:targets.ContainsKey($central.target)){$script:targets[$central.target]=@{count=0;last_seen=(Get-Now);name='';statuses=@{};channels=@{}}}
         $t=$script:targets[$central.target];$t.count++;$t.last_seen=Get-Now
         if($central.name -and -not $central.channel){$t.name=$central.name}
-        $record=@{target=$central.target;code=$central.code;name=$central.name;label=$central.label;kind=$central.kind;channel=$central.channel;event_id=$central.event_id;phase=$central.phase;time=(Get-Now);source=$id}
+        $record=@{target=$central.target;code=$central.code;name=$central.name;label=$central.label;kind=$central.kind;channel=$central.channel;event_id=$central.event_id;phase=$central.phase;time=(Get-Now);source=$id;active=$true}
         $t.statuses[$central.kind]=$record
         if($central.channel){$t.channels[$central.channel]=$record}
         if($central.kind -eq 'fault' -and $id -eq '0-0'){$script:bus.station_fault_reports++;Add-Telemetry $central.target 'station_fault' 1}
         Add-Event 'change' ($central.target+' · '+$central.name+': '+$(if($central.label){$central.label}else{$central.code})+' (gemeldet von '+$id+')') $central.target $hex
+    }
+    if($decoded.withdrawn -and $id -eq '0-0'){
+        $cid=Canonical-Id $decoded.target
+        if($script:targets.ContainsKey($cid)){
+            $t=$script:targets[$cid]
+            foreach($kind in @($t.statuses.Keys)){
+                $record=$t.statuses[$kind]
+                if($record.event_id -eq $decoded.event_id -and $record.code.StartsWith($decoded.status_prefix) -and (-not $record.ContainsKey('active') -or $record.active -ne $false)){
+                    $label=$(if($record.label){$record.label}elseif($record.name){$record.name}else{$kind})+' beendet'
+                    $record.active=$false;$record.time=Get-Now;$record.label=$label;$record.source=$id;$t.last_seen=Get-Now
+                    Add-Event 'change' ($cid+' · '+$label) $cid $hex
+                }
+            }
+        }
     }
     if($command -in @('01 52','02 52','00 08') -and $decoded.child){
         $cid=Canonical-Id $decoded.child
@@ -217,7 +234,7 @@ function Decode-Frame([byte[]]$f){
     $d.seen_frames[$signature]=1
     if($status -and -not $central -and $id -ne '0-0' -and $status -ne $d.last_status){$d.last_status=$status;Add-Event 'change' ($id+': '+$status) $id $hex}
     Write-CaptureLine @{type='frame';time=(Get-Now);device=$id;sync=$sync;command=$command;status=$status;checksum_ok=$true;message=$message;decoded=$decoded;hex=$hex}
-    if($command -notin @('01 03','01 04','02 04','01 51','01 52','00 01','00 02','00 07','00 08','00 0A','00 50','00 80','01 80','02 80','02 51','02 52','00 03','01 06','02 03','02 06','06 03') -or ($command -eq '01 03' -and -not $status)){
+    if($command -notin @('01 03','01 04','02 04','01 51','01 52','00 01','00 02','00 07','00 08','00 0A','00 50','00 80','01 80','02 80','02 51','02 52','00 03','01 06','02 03','02 06','06 03') -or ($command -eq '01 03' -and -not $status -and (-not $central -or $central.kind -eq 'other'))){
         $d.errors.unknown++;$script:bus.unknown++;Add-Event 'unknown' ($id+': unbekanntes Telegramm '+$command+' / '+$(if($statusKey){$statusKey}else{'ohne Status'})) $id $hex
     }
 }
