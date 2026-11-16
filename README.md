@@ -2,6 +2,26 @@
 
 Portabler P7-RS485-Monitor und ESPA-4.4.4-Monitor/Emulator für Windows. Eine Batchdatei startet beide Oberflächen mit Windows PowerShell. Python, zusätzliche PowerShell-Module, ein Installer und Administratorrechte sind nicht erforderlich.
 
+## Screenshots
+
+Momentaufnahmen der DeskPi-Oberflächen vom 16.11.2026. Die portable Windows-Fassung stellt dieselben Monitorbereiche bereit.
+
+**P7-Monitor – Buszähler und Zeitverlauf**
+
+![P7-Monitor mit Buszählern und Zeitverlauf](docs/screenshots/p7-overview.png)
+
+**P7-Monitor – Geräteübersicht**
+
+![P7-Monitor mit Gerätebaum](docs/screenshots/p7-devices.png)
+
+[Erkannte Busteilnehmer](docs/screenshots/p7-participants.png)
+
+**ESPA 4.4.4 – Monitor und Emulator**
+
+![ESPA-Monitor und Emulator](docs/screenshots/espa-overview.png)
+
+[Verbindungseinstellungen](docs/screenshots/espa-settings.png) · [Testmeldung](docs/screenshots/espa-test.png)
+
 ## Start
 
 1. Dieses Repository als ZIP herunterladen und vollständig entpacken.
