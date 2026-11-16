@@ -1,0 +1,4 @@
+data/*.bin
+data/*.jsonl
+data/*.log
+data/config.json
